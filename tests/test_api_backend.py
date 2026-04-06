@@ -9,7 +9,6 @@ import time
 import types
 import unittest
 from pathlib import Path
-from urllib.request import Request, urlopen
 
 
 class _StubAutoClipperCore:
@@ -46,8 +45,10 @@ requests_stub.get = lambda *args, **kwargs: types.SimpleNamespace(
 )
 sys.modules.setdefault("requests", requests_stub)
 
+from fastapi.testclient import TestClient
+
 from api.backend import ClipperBackend
-from api.http_server import ClipperApiServer, ClipperJobManager
+from api.http_server import ClipperJobManager, create_app
 from config.config_manager import ConfigManager
 
 
@@ -252,47 +253,24 @@ class ClipperJobManagerTests(unittest.TestCase):
 
 class ClipperHttpServerTests(unittest.TestCase):
     def test_health_endpoint_returns_ok(self):
-        server = ClipperApiServer(("127.0.0.1", 0), backend=_FakeBackend())
-        thread = types.SimpleNamespace()
-        try:
-            import threading
-
-            thread = threading.Thread(target=server.serve_forever, daemon=True)
-            thread.start()
-            host, port = server.server_address
-            with urlopen(Request(f"http://{host}:{port}/health")) as response:
-                payload = json.loads(response.read().decode("utf-8"))
-            self.assertEqual(payload["status"], "ok")
-        finally:
-            server.shutdown()
-            server.server_close()
-            if hasattr(thread, "join"):
-                thread.join(timeout=1)
+        client = TestClient(create_app(_FakeBackend()))
+        response = client.get("/health")
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.json()["status"], "ok")
 
     def test_openapi_and_docs_endpoints_are_served(self):
-        server = ClipperApiServer(("127.0.0.1", 0), backend=_FakeBackend())
-        thread = types.SimpleNamespace()
-        try:
-            import threading
+        client = TestClient(create_app(_FakeBackend()))
 
-            thread = threading.Thread(target=server.serve_forever, daemon=True)
-            thread.start()
-            host, port = server.server_address
+        spec_response = client.get("/api/openapi.json")
+        self.assertEqual(spec_response.status_code, 200)
+        spec = spec_response.json()
+        self.assertEqual(spec["openapi"], "3.1.0")
+        self.assertIn("/api/jobs/find-highlights", spec["paths"])
 
-            with urlopen(Request(f"http://{host}:{port}/api/openapi.json")) as response:
-                spec = json.loads(response.read().decode("utf-8"))
-            self.assertEqual(spec["openapi"], "3.1.0")
-            self.assertIn("/api/jobs/find-highlights", spec["paths"])
-
-            with urlopen(Request(f"http://{host}:{port}/docs")) as response:
-                html = response.read().decode("utf-8")
-            self.assertIn("SwaggerUIBundle", html)
-            self.assertIn("/api/openapi.json", html)
-        finally:
-            server.shutdown()
-            server.server_close()
-            if hasattr(thread, "join"):
-                thread.join(timeout=1)
+        docs_response = client.get("/docs")
+        self.assertEqual(docs_response.status_code, 200)
+        self.assertIn("SwaggerUIBundle", docs_response.text)
+        self.assertIn("/api/openapi.json", docs_response.text)
 
 
 if __name__ == "__main__":

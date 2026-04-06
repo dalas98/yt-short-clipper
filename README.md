@@ -180,7 +180,7 @@ The app will create a `config.json` file on first run where you can save your AI
 python api_server.py --host 127.0.0.1 --port 8787
 ```
 
-The new HTTP API shares the same backend service layer as the GUI, so configuration and processing behavior stay aligned.
+The new FastAPI-based HTTP API shares the same backend service layer as the GUI, so configuration and processing behavior stay aligned.
 
 Interactive docs:
 

@@ -1,23 +1,79 @@
 from __future__ import annotations
 
 import copy
-import json
 import threading
 import uuid
 from datetime import datetime, timezone
-from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from typing import Any, Optional
-from urllib.parse import urlparse
+
+from fastapi import Body, FastAPI, HTTPException, Request
+from fastapi.middleware.cors import CORSMiddleware
+from pydantic import BaseModel, ConfigDict, Field
+import uvicorn
 
 from api.backend import ClipperBackend
-from api.openapi import build_openapi_spec, build_swagger_ui_html
 
 TERMINAL_STATUSES = {"completed", "failed", "cancelled"}
-ACTIVE_STATUSES = {"queued", "running", "cancelling"}
+
+
+TAGS_METADATA = [
+    {"name": "system", "description": "Health and discovery endpoints"},
+    {"name": "config", "description": "AI provider configuration"},
+    {"name": "providers", "description": "Provider validation and model loading"},
+    {"name": "jobs", "description": "Background processing jobs"},
+    {"name": "sessions", "description": "Saved highlight sessions"},
+]
 
 
 def _utcnow() -> str:
     return datetime.now(timezone.utc).isoformat()
+
+
+class ProviderConfig(BaseModel):
+    model_config = ConfigDict(extra="allow")
+
+    base_url: Optional[str] = None
+    api_key: Optional[str] = None
+    model: Optional[str] = None
+    system_message: Optional[str] = None
+
+
+class SaveAiConfigRequest(BaseModel):
+    model_config = ConfigDict(extra="allow")
+
+    provider_type: Optional[str] = Field(default=None, alias="_provider_type")
+    highlight_finder: Optional[ProviderConfig] = None
+    caption_maker: Optional[ProviderConfig] = None
+    hook_maker: Optional[ProviderConfig] = None
+    youtube_title_maker: Optional[ProviderConfig] = None
+
+
+class ProviderRequest(BaseModel):
+    base_url: str
+    api_key: str
+
+
+class FullProcessRequest(BaseModel):
+    url: Optional[str] = None
+    num_clips: int = 5
+    add_captions: bool = True
+    add_hook: bool = False
+    subtitle_language: str = "id"
+
+
+class FindHighlightsRequest(BaseModel):
+    url: Optional[str] = None
+    num_clips: int = 5
+    subtitle_language: str = "id"
+
+
+class ProcessSelectedRequest(BaseModel):
+    session_id: Optional[str] = None
+    session_dir: Optional[str] = None
+    selected_indexes: Optional[list[int]] = None
+    selected_highlights: Optional[list[dict[str, Any]]] = None
+    add_captions: bool = False
+    add_hook: bool = False
 
 
 class ClipperJobManager:
@@ -354,211 +410,130 @@ class ClipperJobManager:
         return job
 
 
-class ClipperApiServer(ThreadingHTTPServer):
-    daemon_threads = True
+def create_app(backend: Optional[ClipperBackend] = None) -> FastAPI:
+    backend = backend or ClipperBackend()
+    job_manager = ClipperJobManager(backend)
 
-    def __init__(
-        self,
-        server_address: tuple[str, int],
-        backend: Optional[ClipperBackend] = None,
-    ):
-        self.backend = backend or ClipperBackend()
-        self.job_manager = ClipperJobManager(self.backend)
-        super().__init__(server_address, ClipperApiHandler)
+    app = FastAPI(
+        title="YT Short Clipper API",
+        version="1.0.0",
+        description=(
+            "HTTP integration API for the GUI-first YT Short Clipper app. "
+            "The API shares the same backend service layer as the desktop/webview GUI."
+        ),
+        openapi_url="/api/openapi.json",
+        docs_url="/docs",
+        redoc_url=None,
+        openapi_tags=TAGS_METADATA,
+    )
+    app.state.backend = backend
+    app.state.job_manager = job_manager
 
+    app.add_middleware(
+        CORSMiddleware,
+        allow_origins=["*"],
+        allow_credentials=False,
+        allow_methods=["*"],
+        allow_headers=["*"],
+    )
 
-class ClipperApiHandler(BaseHTTPRequestHandler):
-    server: ClipperApiServer
+    @app.get("/health", tags=["system"])
+    async def health() -> dict[str, str]:
+        return {"status": "ok"}
 
-    def do_OPTIONS(self) -> None:
-        self.send_response(204)
-        self._send_cors_headers()
-        self.end_headers()
+    @app.get("/api/config/ai", tags=["config"])
+    async def get_ai_config(request: Request) -> dict[str, Any]:
+        backend = request.app.state.backend
+        return {
+            "status": "ok",
+            "provider_type": backend.get_provider_type(),
+            "data": backend.get_ai_settings(),
+        }
 
-    def do_GET(self) -> None:
-        parsed = urlparse(self.path)
-        path = parsed.path.rstrip("/") or "/"
-        parts = [part for part in path.split("/") if part]
-        server_url = f"http://{self.headers.get('Host') or f'{self.server.server_address[0]}:{self.server.server_address[1]}'}"
+    @app.post("/api/config/ai", tags=["config"])
+    async def save_ai_config(request: Request, payload: SaveAiConfigRequest = Body(...)) -> dict[str, Any]:
+        return request.app.state.backend.save_ai_settings(payload.model_dump(by_alias=True, exclude_none=True))
 
-        if path == "/health":
-            self._respond_json(200, {"status": "ok"})
-            return
+    @app.post("/api/providers/validate", tags=["providers"])
+    async def validate_provider(request: Request, payload: ProviderRequest) -> dict[str, Any]:
+        return request.app.state.backend.validate_api_key(payload.base_url, payload.api_key)
 
-        if path == "/api/openapi.json":
-            self._respond_json(200, build_openapi_spec(server_url))
-            return
+    @app.post("/api/providers/models", tags=["providers"])
+    async def get_provider_models(request: Request, payload: ProviderRequest) -> dict[str, Any]:
+        return request.app.state.backend.get_models(payload.base_url, payload.api_key)
 
-        if path == "/docs":
-            self._respond_html(200, build_swagger_ui_html(f"{server_url}/api/openapi.json"))
-            return
+    @app.get("/api/jobs", tags=["jobs"])
+    async def list_jobs(request: Request) -> dict[str, Any]:
+        return {"jobs": request.app.state.job_manager.list_jobs()}
 
-        if parts == ["api", "config", "ai"]:
-            self._respond_json(
-                200,
-                {
-                    "status": "ok",
-                    "provider_type": self.server.backend.get_provider_type(),
-                    "data": self.server.backend.get_ai_settings(),
-                },
-            )
-            return
+    @app.get("/api/jobs/{job_id}", tags=["jobs"])
+    async def get_job(request: Request, job_id: str) -> dict[str, Any]:
+        job = request.app.state.job_manager.get_job(job_id)
+        if not job:
+            raise HTTPException(status_code=404, detail=f"Unknown job: {job_id}")
+        return job
 
-        if parts == ["api", "sessions"]:
-            self._respond_json(200, {"sessions": self.server.backend.list_sessions()})
-            return
-
-        if len(parts) == 3 and parts[:2] == ["api", "sessions"]:
-            try:
-                self._respond_json(200, self.server.backend.get_session(parts[2]))
-            except FileNotFoundError as exc:
-                self._respond_json(404, {"error": str(exc)})
-            return
-
-        if parts == ["api", "jobs"]:
-            self._respond_json(200, {"jobs": self.server.job_manager.list_jobs()})
-            return
-
-        if len(parts) == 3 and parts[:2] == ["api", "jobs"]:
-            job = self.server.job_manager.get_job(parts[2])
-            if not job:
-                self._respond_json(404, {"error": f"Unknown job: {parts[2]}"})
-            else:
-                self._respond_json(200, job)
-            return
-
-        self._respond_json(404, {"error": f"Unknown route: {path}"})
-
-    def do_POST(self) -> None:
-        parsed = urlparse(self.path)
-        path = parsed.path.rstrip("/") or "/"
-        parts = [part for part in path.split("/") if part]
+    @app.post("/api/jobs/{job_id}/cancel", tags=["jobs"])
+    async def cancel_job(request: Request, job_id: str) -> dict[str, Any]:
         try:
-            payload = self._read_json_body()
-        except ValueError as exc:
-            self._respond_json(400, {"error": str(exc)})
-            return
+            return request.app.state.job_manager.cancel_job(job_id)
+        except KeyError as exc:
+            raise HTTPException(status_code=404, detail=str(exc)) from exc
 
-        if parts == ["api", "config", "ai"]:
-            self._respond_json(200, self.server.backend.save_ai_settings(payload))
-            return
+    @app.post("/api/jobs/full-process", status_code=202, tags=["jobs"])
+    async def start_full_process(request: Request, payload: FullProcessRequest) -> dict[str, Any]:
+        if not payload.url:
+            raise HTTPException(status_code=400, detail="Missing field: url")
+        return request.app.state.job_manager.start_full_process(
+            url=payload.url,
+            num_clips=int(payload.num_clips),
+            add_captions=payload.add_captions,
+            add_hook=payload.add_hook,
+            subtitle_language=payload.subtitle_language,
+        )
 
-        if parts == ["api", "providers", "validate"]:
-            self._respond_json(
-                200,
-                self.server.backend.validate_api_key(
-                    payload.get("base_url", ""),
-                    payload.get("api_key", ""),
-                ),
-            )
-            return
+    @app.post("/api/jobs/find-highlights", status_code=202, tags=["jobs"])
+    async def start_find_highlights(request: Request, payload: FindHighlightsRequest) -> dict[str, Any]:
+        if not payload.url:
+            raise HTTPException(status_code=400, detail="Missing field: url")
+        return request.app.state.job_manager.start_find_highlights(
+            url=payload.url,
+            num_clips=int(payload.num_clips),
+            subtitle_language=payload.subtitle_language,
+        )
 
-        if parts == ["api", "providers", "models"]:
-            self._respond_json(
-                200,
-                self.server.backend.get_models(
-                    payload.get("base_url", ""),
-                    payload.get("api_key", ""),
-                ),
-            )
-            return
-
-        if parts == ["api", "jobs", "full-process"]:
-            try:
-                job = self.server.job_manager.start_full_process(
-                    url=payload["url"],
-                    num_clips=int(payload.get("num_clips", 5)),
-                    add_captions=bool(payload.get("add_captions", True)),
-                    add_hook=bool(payload.get("add_hook", False)),
-                    subtitle_language=payload.get("subtitle_language", "id"),
-                )
-                self._respond_json(202, job)
-            except KeyError as exc:
-                self._respond_json(400, {"error": f"Missing field: {exc.args[0]}"})
-            return
-
-        if parts == ["api", "jobs", "find-highlights"]:
-            try:
-                job = self.server.job_manager.start_find_highlights(
-                    url=payload["url"],
-                    num_clips=int(payload.get("num_clips", 5)),
-                    subtitle_language=payload.get("subtitle_language", "id"),
-                )
-                self._respond_json(202, job)
-            except KeyError as exc:
-                self._respond_json(400, {"error": f"Missing field: {exc.args[0]}"})
-            return
-
-        if parts == ["api", "jobs", "process-selected"]:
-            session_ref = payload.get("session_id") or payload.get("session_dir")
-            if not session_ref:
-                self._respond_json(400, {"error": "Missing field: session_id or session_dir"})
-                return
-            try:
-                job = self.server.job_manager.start_process_selected(
-                    session_ref=session_ref,
-                    selected_indexes=payload.get("selected_indexes"),
-                    selected_highlights=payload.get("selected_highlights"),
-                    add_captions=bool(payload.get("add_captions", False)),
-                    add_hook=bool(payload.get("add_hook", False)),
-                )
-                self._respond_json(202, job)
-            except (IndexError, FileNotFoundError) as exc:
-                self._respond_json(400, {"error": str(exc)})
-            return
-
-        if len(parts) == 4 and parts[:2] == ["api", "jobs"] and parts[3] == "cancel":
-            job_id = parts[2]
-            try:
-                self._respond_json(200, self.server.job_manager.cancel_job(job_id))
-            except KeyError as exc:
-                self._respond_json(404, {"error": str(exc)})
-            return
-
-        self._respond_json(404, {"error": f"Unknown route: {path}"})
-
-    def _read_json_body(self) -> dict[str, Any]:
-        length = int(self.headers.get("Content-Length", "0"))
-        if length <= 0:
-            return {}
-        raw = self.rfile.read(length)
-        if not raw:
-            return {}
+    @app.post("/api/jobs/process-selected", status_code=202, tags=["jobs"])
+    async def start_process_selected(request: Request, payload: ProcessSelectedRequest) -> dict[str, Any]:
+        session_ref = payload.session_id or payload.session_dir
+        if not session_ref:
+            raise HTTPException(status_code=400, detail="Missing field: session_id or session_dir")
         try:
-            return json.loads(raw.decode("utf-8"))
-        except json.JSONDecodeError as exc:
-            raise ValueError(f"Invalid JSON body: {exc}") from exc
+            return request.app.state.job_manager.start_process_selected(
+                session_ref=session_ref,
+                selected_indexes=payload.selected_indexes,
+                selected_highlights=payload.selected_highlights,
+                add_captions=payload.add_captions,
+                add_hook=payload.add_hook,
+            )
+        except (IndexError, FileNotFoundError) as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
 
-    def _respond_json(self, status_code: int, payload: dict[str, Any]) -> None:
-        body = json.dumps(payload, ensure_ascii=False).encode("utf-8")
-        self.send_response(status_code)
-        self._send_cors_headers()
-        self.send_header("Content-Type", "application/json; charset=utf-8")
-        self.send_header("Content-Length", str(len(body)))
-        self.end_headers()
-        self.wfile.write(body)
+    @app.get("/api/sessions", tags=["sessions"])
+    async def list_sessions(request: Request) -> dict[str, Any]:
+        return {"sessions": request.app.state.backend.list_sessions()}
 
-    def _respond_html(self, status_code: int, html: str) -> None:
-        body = html.encode("utf-8")
-        self.send_response(status_code)
-        self._send_cors_headers()
-        self.send_header("Content-Type", "text/html; charset=utf-8")
-        self.send_header("Content-Length", str(len(body)))
-        self.end_headers()
-        self.wfile.write(body)
+    @app.get("/api/sessions/{session_id}", tags=["sessions"])
+    async def get_session(request: Request, session_id: str) -> dict[str, Any]:
+        try:
+            return request.app.state.backend.get_session(session_id)
+        except FileNotFoundError as exc:
+            raise HTTPException(status_code=404, detail=str(exc)) from exc
 
-    def _send_cors_headers(self) -> None:
-        self.send_header("Access-Control-Allow-Origin", "*")
-        self.send_header("Access-Control-Allow-Headers", "Content-Type, Authorization")
-        self.send_header("Access-Control-Allow-Methods", "GET, POST, OPTIONS")
-
-    def log_message(self, format: str, *args: Any) -> None:
-        # Keep stdout clean for GUI/API embedding.
-        return
+    return app
 
 
-def serve_api(host: str = "127.0.0.1", port: int = 8787, backend: Optional[ClipperBackend] = None) -> ClipperApiServer:
-    server = ClipperApiServer((host, port), backend=backend)
-    print(f"YT Short Clipper API listening on http://{host}:{port}")
-    server.serve_forever()
-    return server
+app = create_app()
+
+
+def serve_api(host: str = "127.0.0.1", port: int = 8787, backend: Optional[ClipperBackend] = None) -> None:
+    uvicorn.run(create_app(backend=backend), host=host, port=port)
