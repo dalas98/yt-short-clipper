@@ -1,0 +1,17 @@
+services:
+  yt-short-clipper-api:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    image: yt-short-clipper-api:latest
+    container_name: yt-short-clipper-api
+    ports:
+      - "8787:8787"
+    environment:
+      PORT: 8787
+      YTSC_API_HOST: 0.0.0.0
+      YTSC_CONFIG_FILE: /data/config.json
+      YTSC_OUTPUT_DIR: /data/output
+    volumes:
+      - ./docker-data:/data
+    restart: unless-stopped

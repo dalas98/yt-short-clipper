@@ -188,6 +188,10 @@ class ConfigManager:
     def get(self, key, default=None):
         """Get configuration value"""
         return self.config.get(key, default)
+
+    def get_all(self):
+        """Get a shallow copy of the full configuration dict."""
+        return dict(self.config)
     
     def set(self, key, value):
         """Set configuration value and save"""

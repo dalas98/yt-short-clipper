@@ -13,7 +13,6 @@ import urllib.request
 import io
 from pathlib import Path
 from tkinter import filedialog, messagebox
-from openai import OpenAI
 from PIL import Image, ImageTk
 
 # Import version info
@@ -23,6 +22,7 @@ from version import __version__, UPDATE_CHECK_URL
 from utils.helpers import get_app_dir, get_bundle_dir, get_ffmpeg_path, get_ytdlp_path, extract_video_id
 from utils.logger import debug_log, setup_error_logging, log_error, get_error_log_path
 from config.config_manager import ConfigManager
+from api.backend import ClipperBackend
 from dialogs.model_selector import SearchableModelDropdown
 from dialogs.youtube_upload import YouTubeUploadDialog
 from dialogs.terms_of_service import TermsOfServiceDialog
@@ -64,6 +64,7 @@ class YTShortClipperApp(ctk.CTk):
         super().__init__()
         
         self.config = ConfigManager(CONFIG_FILE, OUTPUT_DIR)
+        self.backend = ClipperBackend(config_file=CONFIG_FILE, output_dir=OUTPUT_DIR)
         self.client = None
         self.current_thumbnail = None
         self.processing = False
@@ -594,25 +595,23 @@ class YTShortClipperApp(ctk.CTk):
         )
     
     def load_config(self):
-        api_key = self.config.get("api_key", "")
-        base_url = self.config.get("base_url", "https://api.openai.com/v1")
         model = self.config.get("model", "")
-        
-        if api_key:
-            try:
-                self.client = OpenAI(api_key=api_key, base_url=base_url)
-                # Only update UI if widgets exist
+
+        try:
+            self.client = self.backend.create_provider_client("highlight_finder", allow_legacy=True)
+            if self.client:
                 if hasattr(self, 'api_dot'):
                     self.api_dot.configure(text_color="#27ae60")  # Green
                     self.api_status_label.configure(text=model[:15] if model else "Connected")
-            except:
+            else:
                 if hasattr(self, 'api_dot'):
                     self.api_dot.configure(text_color="#e74c3c")  # Red
-                    self.api_status_label.configure(text="Invalid key")
-        else:
+                    self.api_status_label.configure(text="Not configured")
+        except Exception:
+            self.client = None
             if hasattr(self, 'api_dot'):
                 self.api_dot.configure(text_color="#e74c3c")  # Red
-                self.api_status_label.configure(text="Not configured")
+                self.api_status_label.configure(text="Invalid key")
     
     def check_youtube_status(self):
         """Check YouTube connection status"""
@@ -656,29 +655,11 @@ class YTShortClipperApp(ctk.CTk):
         if isinstance(updated_config, dict):
             self.config.config.update(updated_config)
             self.config.save()
-            
-            # Update OpenAI client if highlight_finder config changed
-            ai_providers = updated_config.get("ai_providers", {})
-            hf_config = ai_providers.get("highlight_finder", {})
-            if hf_config.get("api_key"):
-                self.client = OpenAI(
-                    api_key=hf_config.get("api_key"),
-                    base_url=hf_config.get("base_url", "https://api.openai.com/v1")
-                )
+            self.client = self.backend.create_provider_client("highlight_finder", allow_legacy=True)
     
     def get_youtube_client(self):
         """Get OpenAI client for YouTube title generation"""
-        ai_providers = self.config.get("ai_providers", {})
-        yt_config = ai_providers.get("youtube_title_maker", {})
-        
-        if yt_config.get("api_key"):
-            return OpenAI(
-                api_key=yt_config.get("api_key"),
-                base_url=yt_config.get("base_url", "https://api.openai.com/v1")
-            )
-        else:
-            # Fallback to main client for backward compatibility
-            return self.client
+        return self.backend.create_provider_client("youtube_title_maker") or self.client
     
     def on_url_change(self, *args):
         url = self.url_var.get().strip()
@@ -1015,49 +996,9 @@ class YTShortClipperApp(ctk.CTk):
         
         def validate_and_start():
             try:
-                from openai import OpenAI
-                
-                # Validate Highlight Finder (required for all processing)
-                ai_providers = self.config.get("ai_providers", {})
-                hf_config = ai_providers.get("highlight_finder", {})
-                hf_api_key = hf_config.get("api_key", "").strip()
-                hf_base_url = hf_config.get("base_url", "https://api.openai.com/v1").strip()
-                hf_model = hf_config.get("model", "").strip()
-                
-                if not hf_api_key or not hf_model:
-                    self.after(0, lambda: self._on_validation_failed(
-                        "Highlight Finder API is not configured!\n\n" +
-                        "This is required to find viral moments in videos.\n\n" +
-                        "Please configure it in Settings → AI API Settings → Highlight Finder"))
-                    return
-                
-                # Test Highlight Finder API
-                try:
-                    hf_client = OpenAI(api_key=hf_api_key, base_url=hf_base_url)
-                    
-                    # Try to list models to verify API key and model availability
-                    try:
-                        hf_models = hf_client.models.list()
-                        hf_available = [m.id for m in hf_models.data]
-                        
-                        if hf_model not in hf_available:
-                            self.after(0, lambda: self._on_validation_failed(
-                                f"Highlight Finder model '{hf_model}' is not available!\n\n" +
-                                "Please check your configuration in:\n" +
-                                "Settings → AI API Settings → Highlight Finder"))
-                            return
-                    except Exception as list_error:
-                        # If models.list() fails, the API key might still be valid
-                        # Some providers don't support models.list()
-                        # Just verify the API key is not empty and continue
-                        pass
-                    
-                except Exception as e:
-                    self.after(0, lambda: self._on_validation_failed(
-                        f"Highlight Finder API validation failed!\n\n" +
-                        f"Error: {str(e)[:100]}\n\n" +
-                        "Please check your configuration in:\n" +
-                        "Settings → AI API Settings → Highlight Finder"))
+                validation = self.backend.validate_highlight_finder_configuration()
+                if validation.get("status") != "ok":
+                    self.after(0, lambda: self._on_validation_failed(validation.get("message", "Validation failed")))
                     return
                 
                 # All validations passed, proceed with processing
@@ -1140,59 +1081,18 @@ class YTShortClipperApp(ctk.CTk):
     
     def run_processing(self, url, num_clips, output_dir, model, add_captions, add_hook, subtitle_lang="id"):
         try:
-            from clipper_core import AutoClipperCore
-            
             # Wrapper for log callback that also logs to console in debug mode
             def log_with_debug(msg):
                 debug_log(msg)
                 self.after(0, lambda: self.update_status(msg))
-            
-            # Get system prompt from config
-            # Priority: ai_providers.highlight_finder.system_message > root system_prompt
-            ai_providers = self.config.get("ai_providers", {})
-            highlight_finder = ai_providers.get("highlight_finder", {})
-            system_prompt = highlight_finder.get("system_message") or self.config.get("system_prompt", None)
-            
-            temperature = self.config.get("temperature", 1.0)
-            tts_model = self.config.get("tts_model", "tts-1")
-            watermark_settings = self.config.get("watermark", {"enabled": False})
-            credit_watermark_settings = self.config.get("credit_watermark", {"enabled": False})
-            
-            # Get face tracking mode from config (set in settings page)
-            face_tracking_mode = self.config.get("face_tracking_mode", "opencv")
-            
-            mediapipe_settings = self.config.get("mediapipe_settings", {
-                "lip_activity_threshold": 0.15,
-                "switch_threshold": 0.3,
-                "min_shot_duration": 90,
-                "center_weight": 0.3
-            })
-            
-            core = AutoClipperCore(
-                client=self.client,
-                ffmpeg_path=get_ffmpeg_path(),
-                ytdlp_path=get_ytdlp_path(),
-                output_dir=output_dir,
-                model=model,
-                tts_model=tts_model,
-                temperature=temperature,
-                system_prompt=system_prompt,
-                watermark_settings=watermark_settings,
-                credit_watermark_settings=credit_watermark_settings,
-                face_tracking_mode=face_tracking_mode,
-                mediapipe_settings=mediapipe_settings,
-                ai_providers=self.config.get("ai_providers"),
+            core = self.backend.create_core(
                 subtitle_language=subtitle_lang,
+                client=self.client,
                 log_callback=log_with_debug,
                 progress_callback=lambda s, p: self.after(0, lambda: self.update_progress(s, p)),
                 token_callback=lambda a, b, c, d: self.after(0, lambda: self.update_tokens(a, b, c, d)),
                 cancel_check=lambda: self.cancelled
             )
-            
-            # Enable GPU acceleration if configured
-            gpu_settings = self.config.get("gpu_acceleration", {})
-            if gpu_settings.get("enabled", False):
-                core.enable_gpu_acceleration(True)
             
             core.process(url, num_clips, add_captions=add_captions, add_hook=add_hook)
             if not self.cancelled:
@@ -1278,30 +1178,15 @@ class YTShortClipperApp(ctk.CTk):
     def run_find_highlights(self, url, num_clips, output_dir, model, subtitle_lang="id"):
         """NEW: Phase 1 - Find highlights only (don't process yet)"""
         try:
-            from clipper_core import AutoClipperCore, SubtitleNotFoundError
+            from clipper_core import SubtitleNotFoundError
             
             # Wrapper for log callback
             def log_with_debug(msg):
                 debug_log(msg)
                 self.after(0, lambda: self.update_status(msg))
-            
-            # Get system prompt from config
-            ai_providers = self.config.get("ai_providers", {})
-            highlight_finder = ai_providers.get("highlight_finder", {})
-            system_prompt = highlight_finder.get("system_message") or self.config.get("system_prompt", None)
-            
-            temperature = self.config.get("temperature", 1.0)
-            
-            core = AutoClipperCore(
-                client=self.client,
-                ffmpeg_path=get_ffmpeg_path(),
-                ytdlp_path=get_ytdlp_path(),
-                output_dir=output_dir,
-                model=model,
-                temperature=temperature,
-                system_prompt=system_prompt,
-                ai_providers=self.config.get("ai_providers"),
+            core = self.backend.create_core(
                 subtitle_language=subtitle_lang,
+                client=self.client,
                 log_callback=log_with_debug,
                 progress_callback=lambda s, p: self.after(0, lambda: self.update_progress(s, p)),
                 token_callback=lambda a, b, c, d: self.after(0, lambda: self.update_tokens(a, b, c, d)),
@@ -1498,8 +1383,6 @@ class YTShortClipperApp(ctk.CTk):
     def run_process_selected(self, selected_highlights: list):
         """Process selected highlights in background thread"""
         try:
-            from clipper_core import AutoClipperCore
-            
             # Store total clips for progress tracking
             self.total_clips = len(selected_highlights)
             self.current_clip = 0
@@ -1509,51 +1392,14 @@ class YTShortClipperApp(ctk.CTk):
                 debug_log(msg)
                 self.after(0, lambda: self.update_clipping_status(msg))
             
-            # Get config
-            ai_providers = self.config.get("ai_providers", {})
-            highlight_finder = ai_providers.get("highlight_finder", {})
-            system_prompt = highlight_finder.get("system_message") or self.config.get("system_prompt", None)
-            
-            temperature = self.config.get("temperature", 1.0)
-            tts_model = self.config.get("tts_model", "tts-1")
-            watermark_settings = self.config.get("watermark", {"enabled": False})
-            credit_watermark_settings = self.config.get("credit_watermark", {"enabled": False})
-            face_tracking_mode = self.config.get("face_tracking_mode", "opencv")
-            mediapipe_settings = self.config.get("mediapipe_settings", {
-                "lip_activity_threshold": 0.15,
-                "switch_threshold": 0.3,
-                "min_shot_duration": 90,
-                "center_weight": 0.3
-            })
-            
-            output_dir = self.config.get("output_dir", str(OUTPUT_DIR))
-            model = self.config.get("model", "gpt-4.1")
-            
-            core = AutoClipperCore(
+            core = self.backend.create_core(
+                subtitle_language="id",
                 client=self.client,
-                ffmpeg_path=get_ffmpeg_path(),
-                ytdlp_path=get_ytdlp_path(),
-                output_dir=output_dir,
-                model=model,
-                tts_model=tts_model,
-                temperature=temperature,
-                system_prompt=system_prompt,
-                watermark_settings=watermark_settings,
-                credit_watermark_settings=credit_watermark_settings,
-                face_tracking_mode=face_tracking_mode,
-                mediapipe_settings=mediapipe_settings,
-                ai_providers=self.config.get("ai_providers"),
-                subtitle_language="id",  # Already downloaded
                 log_callback=log_with_debug,
                 progress_callback=lambda s, p: self.after(0, lambda: self.update_clipping_progress(s, p)),
                 token_callback=lambda a, b, c, d: None,  # No token tracking for clipping
                 cancel_check=lambda: self.cancelled
             )
-            
-            # Enable GPU acceleration if configured
-            gpu_settings = self.config.get("gpu_acceleration", {})
-            if gpu_settings.get("enabled", False):
-                core.enable_gpu_acceleration(True)
             
             # Process selected highlights
             core.process_selected_highlights(

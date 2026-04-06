@@ -213,6 +213,8 @@ models/
 # VSCode
 .vscode/
 *.code-workspace
+.omx/
+docker-data/
 
 # PyCharm
 .idea/

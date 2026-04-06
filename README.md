@@ -174,6 +174,83 @@ python app.py
 
 The app will create a `config.json` file on first run where you can save your AI API keys and other settings.
 
+### 5. Run the Integration API
+
+```bash
+python api_server.py --host 127.0.0.1 --port 8787
+```
+
+The new HTTP API shares the same backend service layer as the GUI, so configuration and processing behavior stay aligned.
+
+Interactive docs:
+
+- Swagger UI: `http://127.0.0.1:8787/docs`
+- OpenAPI JSON: `http://127.0.0.1:8787/api/openapi.json`
+
+Key endpoints:
+
+- `GET /health` - health check
+- `GET /api/openapi.json` - OpenAPI 3.1 spec
+- `GET /docs` - Swagger UI
+- `GET /api/config/ai` - current AI provider config
+- `POST /api/config/ai` - save AI provider config
+- `POST /api/providers/validate` - validate provider credentials
+- `POST /api/providers/models` - fetch available models
+- `POST /api/jobs/find-highlights` - phase 1: download + detect highlights
+- `POST /api/jobs/process-selected` - phase 2: process chosen highlights from a saved session
+- `POST /api/jobs/full-process` - one-shot processing pipeline
+- `GET /api/jobs/<job_id>` - poll job status/result
+- `POST /api/jobs/<job_id>/cancel` - request cancellation
+- `GET /api/sessions` - list saved highlight sessions
+- `GET /api/sessions/<session_id>` - inspect one saved session
+
+Example:
+
+```bash
+curl -X POST http://127.0.0.1:8787/api/jobs/find-highlights \
+  -H 'Content-Type: application/json' \
+  -d '{"url":"https://www.youtube.com/watch?v=VIDEO_ID","num_clips":3,"subtitle_language":"id"}'
+```
+
+### 6. Deploy with Docker
+
+Build the API image:
+
+```bash
+docker build -t yt-short-clipper-api .
+```
+
+Run it:
+
+```bash
+docker run --rm -p 8787:8787 \
+  -e PORT=8787 \
+  -e YTSC_API_HOST=0.0.0.0 \
+  -e YTSC_CONFIG_FILE=/data/config.json \
+  -e YTSC_OUTPUT_DIR=/data/output \
+  -v $(pwd)/docker-data:/data \
+  yt-short-clipper-api
+```
+
+Or use Compose:
+
+```bash
+docker compose up --build
+```
+
+Docker deployment files added:
+
+- `Dockerfile`
+- `.dockerignore`
+- `compose.yaml`
+- `requirements_api.txt`
+
+Container notes:
+
+- The API listens on port `8787`
+- Persistent config/output are stored under `/data`
+- Default docs URL inside the container deployment: `http://localhost:8787/docs`
+
 ---
 
 ## 📁 Project Structure

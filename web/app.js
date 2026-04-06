@@ -164,9 +164,10 @@ async function poll() {
   try {
     const p = await window.pywebview.api.get_progress();
     const pr = Math.max(0, Math.min(1, p.progress || 0));
+    const state = (p.state || '').toLowerCase();
     homeView.fields.bar.style.width = (pr * 100).toFixed(1) + '%';
     homeView.fields.status.textContent = p.status || '';
-    if (p.status && (p.status.startsWith('error') || p.status === 'complete')) {
+    if (state === 'completed' || state === 'failed' || state === 'cancelled') {
       clearInterval(polling);
       polling = null;
       lockControls(false);
