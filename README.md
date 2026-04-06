@@ -22,7 +22,7 @@ Download the desktop app and follow the complete setup guide:
 **What you'll learn:**
 1. How to download and run the app
 2. Setup required libraries (yt-dlp, FFmpeg, Deno)
-3. Setup YouTube cookies for video access
+3. Optionally setup YouTube cookies for restricted video access
 4. Configure AI API (multiple providers supported)
 5. Start processing videos
 

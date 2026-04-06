@@ -359,12 +359,6 @@ class YTShortClipperApp(ctk.CTk):
     
     def paste_url(self):
         """Paste URL from clipboard"""
-        # Check if cookies exist first
-        if not self.cookies_path.exists():
-            # Show custom dialog with buttons
-            self.show_cookies_required_dialog()
-            return
-        
         try:
             # Get clipboard content
             clipboard_text = self.clipboard_get()
@@ -486,7 +480,7 @@ class YTShortClipperApp(ctk.CTk):
             return True
         else:
             self.cookies_status_label.configure(
-                text="🍪 No cookies.txt found",
+                text="🍪 No cookies.txt found (optional)",
                 text_color="gray"
             )
             # Update start button state when cookies status changes
@@ -682,20 +676,13 @@ class YTShortClipperApp(ctk.CTk):
             self.update_start_button_state()
     
     def update_start_button_state(self):
-        """Update start button state based on URL, cookies, and library validation"""
-        has_cookies = self.cookies_path.exists()
+        """Update start button state based on URL/subtitle/library validation"""
         libs_ok = getattr(self, 'libs_installed', True)  # Default True if not checked yet
         
         # Always keep paste button enabled (so user can see alert)
         self.paste_btn.configure(state="normal")
-        
-        # If no cookies, disable URL entry and start button
-        if not has_cookies:
-            self.url_entry.configure(state="disabled")
-            self.start_btn.configure(state="disabled", fg_color="gray", hover_color="gray")
-            return
-        
-        # Cookies exist - enable URL input
+
+        # Cookies are optional now; keep URL input enabled
         self.url_entry.configure(state="normal")
         
         # Check if URL is valid, subtitle is loaded, and libs are installed

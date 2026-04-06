@@ -208,6 +208,51 @@ class AutoClipperCore:
     
     
     @staticmethod
+    def _cookies_file_has_youtube_auth(cookies_path: str | Path | None) -> bool:
+        """Return True when a cookies file contains YouTube auth cookies."""
+        if not cookies_path:
+            return False
+
+        path = Path(cookies_path)
+        if not path.exists():
+            return False
+
+        required_cookies = ['SID', 'HSID', 'SSID', 'APISID', 'SAPISID', 'LOGIN_INFO']
+        secure_prefixes = ['__Secure-1P', '__Secure-3P']
+
+        try:
+            content = path.read_text(encoding='utf-8')
+        except Exception as e:
+            debug_log(f"Error reading cookies file: {e}")
+            return False
+
+        for cookie in required_cookies:
+            if f"\t{cookie}\t" in content or content.endswith(f"\t{cookie}"):
+                return True
+            for prefix in secure_prefixes:
+                secure_name = f"{prefix}{cookie}"
+                if f"\t{secure_name}\t" in content or content.endswith(f"\t{secure_name}"):
+                    return True
+
+        return False
+
+    @staticmethod
+    def _find_cookies_file() -> Path | None:
+        """Find a cookies.txt file in known app locations."""
+        from utils.helpers import get_app_dir
+
+        app_dir = get_app_dir()
+        cookies_locations = [
+            Path("cookies.txt"),
+            app_dir / "cookies.txt",
+        ]
+
+        for loc in cookies_locations:
+            if loc.exists():
+                return loc
+        return None
+
+    @staticmethod
     def get_default_prompt():
         """Get default system prompt for highlight detection"""
         return """Kamu adalah EDITOR SHORT-FORM TIER A untuk konten PODCAST viral (TikTok / Reels / Shorts).
@@ -539,26 +584,13 @@ Transcript:
         else:
             self.log(f"  WARNING: FFmpeg not found - subtitle conversion disabled")
         
-        # Add cookies (required)
-        from utils.helpers import get_app_dir
-        app_dir = get_app_dir()
-        cookies_locations = [
-            Path("cookies.txt"),  # Current directory
-            app_dir / "cookies.txt",  # App directory
-        ]
-        
-        cookies_path = None
-        for loc in cookies_locations:
-            self.log(f"  Checking cookies at: {loc} - exists: {loc.exists()}")
-            if loc.exists():
-                cookies_path = loc
-                break
-        
-        if not cookies_path:
-            raise Exception("cookies.txt not found!\n\nPlease upload cookies.txt file from home page.")
-        
-        ydl_opts['cookiefile'] = str(cookies_path)
-        self.log(f"  Using cookies from: {cookies_path}")
+        # Add cookies when available, but allow anonymous access when absent
+        cookies_path = self._find_cookies_file()
+        if cookies_path:
+            ydl_opts['cookiefile'] = str(cookies_path)
+            self.log(f"  Using cookies from: {cookies_path}")
+        else:
+            self.log("  No cookies.txt found - continuing without cookies")
         
         # Single download attempt (no browser cookies fallback)
         last_error = None
@@ -916,7 +948,7 @@ Transcript:
         Args:
             url: YouTube video URL
             ytdlp_path: Path to yt-dlp executable or "yt_dlp_module" for module
-            cookies_path: Path to cookies.txt file (required)
+            cookies_path: Optional path to cookies.txt file
         
         Returns:
             dict with keys:
@@ -958,51 +990,11 @@ Transcript:
     def _get_subtitles_module(url: str, cookies_path: str, lang_names: dict) -> dict:
         """Get subtitles using yt-dlp Python module API"""
         try:
-            # Check if cookies.txt exists
-            if not cookies_path or not Path(cookies_path).exists():
-                return {
-                    "error": "cookies.txt not found. Please upload cookies.txt file.",
-                    "subtitles": [],
-                    "automatic_captions": []
-                }
-            
-            # Validate cookies file has YouTube auth cookies
-            # Check both plain cookies (SID, HSID, etc.) and __Secure- prefixed variants
-            # Modern browsers/extensions often export only __Secure- versions
-            required_cookies = ['SID', 'HSID', 'SSID', 'APISID', 'SAPISID', 'LOGIN_INFO']
-            secure_prefixes = ['__Secure-1P', '__Secure-3P']
-            found_cookies = []
-            try:
-                with open(cookies_path, 'r', encoding='utf-8') as f:
-                    content = f.read()
-                    for cookie in required_cookies:
-                        # Check plain cookie name (tab-separated format)
-                        if f"\t{cookie}\t" in content or content.endswith(f"\t{cookie}"):
-                            found_cookies.append(cookie)
-                        else:
-                            # Check __Secure- prefixed variants (e.g. __Secure-3PSID)
-                            for prefix in secure_prefixes:
-                                secure_name = f"{prefix}{cookie}"
-                                if f"\t{secure_name}\t" in content or content.endswith(f"\t{secure_name}"):
-                                    found_cookies.append(secure_name)
-                                    break
-                
-                if not found_cookies:
-                    debug_log(f"Cookies file missing required auth cookies. Found: {found_cookies}")
-                    return {
-                        "error": "Invalid cookies.txt - missing YouTube authentication cookies.\n\n"
-                                 "Please export fresh cookies from your browser while logged into YouTube.\n\n"
-                                 "Required cookies: SID, HSID, SSID, APISID, SAPISID, LOGIN_INFO\n\n"
-                                 "Use a browser extension like 'Get cookies.txt LOCALLY' to export.",
-                        "subtitles": [],
-                        "automatic_captions": []
-                    }
-                debug_log(f"Found auth cookies: {found_cookies}")
-            except Exception as e:
-                debug_log(f"Error reading cookies file: {e}")
-            
             debug_log(f"Using yt-dlp module v{yt_dlp.version.__version__}")
-            debug_log(f"Cookies path: {cookies_path} (exists: {Path(cookies_path).exists()})")
+            use_cookies = AutoClipperCore._cookies_file_has_youtube_auth(cookies_path)
+            if cookies_path:
+                debug_log(f"Cookies path: {cookies_path} (exists: {Path(cookies_path).exists()})")
+            debug_log(f"Using cookies for subtitles: {use_cookies}")
             
             # Setup Deno in PATH if available
             deno_path = get_deno_path()
@@ -1023,8 +1015,9 @@ Transcript:
                 'skip_download': True,
                 'quiet': False,  # Show warnings for debugging
                 'no_warnings': False,
-                'cookiefile': str(cookies_path),  # Ensure string path
             }
+            if use_cookies:
+                ydl_opts['cookiefile'] = str(cookies_path)
             
             # Add Deno JS runtime if available
             if deno_path and Path(deno_path).exists():
@@ -1037,7 +1030,7 @@ Transcript:
                 ydl_opts['ffmpeg_location'] = str(Path(ffmpeg_path).parent)
                 debug_log(f"FFmpeg location: {ydl_opts['ffmpeg_location']}")
             
-            debug_log(f"yt-dlp opts: cookiefile={ydl_opts['cookiefile']}")
+            debug_log(f"yt-dlp opts: cookiefile={ydl_opts.get('cookiefile')}")
             
             with yt_dlp.YoutubeDL(ydl_opts) as ydl:
                 video_data = ydl.extract_info(url, download=False)
@@ -1075,13 +1068,7 @@ Transcript:
     def _get_subtitles_subprocess(url: str, ytdlp_path: str, cookies_path: str, lang_names: dict) -> dict:
         """Get subtitles using yt-dlp subprocess (fallback)"""
         try:
-            # Check if cookies.txt exists
-            if not cookies_path or not Path(cookies_path).exists():
-                return {
-                    "error": "cookies.txt not found. Please upload cookies.txt file.",
-                    "subtitles": [],
-                    "automatic_captions": []
-                }
+            use_cookies = AutoClipperCore._cookies_file_has_youtube_auth(cookies_path)
             
             # Setup environment with Deno path if available
             env = os.environ.copy()
@@ -1098,8 +1085,9 @@ Transcript:
             
             # Use --dump-json to get structured data
             # NOTE: Don't use player_client=android with cookies - it bypasses cookie auth
-            cmd = [ytdlp_path, "--dump-json", "--skip-download", 
-                   "--cookies", cookies_path]
+            cmd = [ytdlp_path, "--dump-json", "--skip-download"]
+            if use_cookies:
+                cmd.extend(["--cookies", cookies_path])
             
             # Check for remote-components support (requires Deno)
             try:

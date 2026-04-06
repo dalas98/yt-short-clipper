@@ -6,9 +6,9 @@ This guide explains how to export and use cookies.txt for YT Short Clipper.
 
 ## English
 
-### Why Cookies Are Required
+### Why Cookies Can Help
 
-YouTube requires authentication to access video data. The `cookies.txt` file contains your YouTube session cookies, allowing the app to download videos on your behalf.
+Cookies are now **optional**, but they still help a lot for age-restricted, region-limited, bot-protected, or otherwise harder-to-access YouTube videos. The `cookies.txt` file contains your YouTube session cookies, allowing the app to download videos on your behalf when anonymous access is not enough.
 
 ### Required Cookies
 
@@ -89,9 +89,9 @@ Your cookies.txt must contain these YouTube authentication cookies:
 
 ## Bahasa Indonesia
 
-### Mengapa Cookies Diperlukan
+### Mengapa Cookies Bisa Membantu
 
-YouTube memerlukan autentikasi untuk mengakses data video. File `cookies.txt` berisi cookies sesi YouTube kamu, memungkinkan aplikasi untuk mendownload video atas nama kamu.
+Cookies sekarang **opsional**, tetapi tetap sangat membantu untuk video YouTube yang age-restricted, region-limited, kena proteksi bot, atau akses anonimnya gagal. File `cookies.txt` berisi cookies sesi YouTube kamu, memungkinkan aplikasi untuk mendownload video atas nama kamu saat akses tanpa login tidak cukup.
 
 ### Cookies yang Diperlukan
 
