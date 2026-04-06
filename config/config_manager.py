@@ -2,13 +2,32 @@
 Configuration manager for YT Short Clipper
 """
 
+import copy
 import json
+import os
 import uuid
 from pathlib import Path
 
 
 class ConfigManager:
     """Manages application configuration"""
+
+    ROOT_ENV_OVERRIDES = {
+        "api_key": "YTSC_API_KEY",
+        "base_url": "YTSC_BASE_URL",
+        "model": "YTSC_MODEL",
+        "tts_model": "YTSC_TTS_MODEL",
+        "system_prompt": "YTSC_SYSTEM_PROMPT",
+        "provider_type": "YTSC_PROVIDER_TYPE",
+        "output_dir": "YTSC_OUTPUT_DIR",
+    }
+
+    PROVIDER_ENV_OVERRIDES = {
+        "base_url": "BASE_URL",
+        "api_key": "API_KEY",
+        "model": "MODEL",
+        "system_message": "SYSTEM_MESSAGE",
+    }
     
     def __init__(self, config_file: Path, output_dir: Path):
         self.config_file = config_file
@@ -184,14 +203,51 @@ class ConfigManager:
         """Save configuration dict to file"""
         with open(self.config_file, "w") as f:
             json.dump(config, f, indent=2)
+
+    def _get_env_override(self, env_name):
+        """Get a non-empty env override value."""
+        value = os.environ.get(env_name)
+        if value is None:
+            return None
+        value = value.strip()
+        return value if value else None
+
+    def _apply_env_overrides(self, config):
+        """Apply runtime env overrides without mutating persisted config."""
+        merged = copy.deepcopy(config)
+
+        for key, env_name in self.ROOT_ENV_OVERRIDES.items():
+            value = self._get_env_override(env_name)
+            if value is not None:
+                merged[key] = value
+
+        providers = merged.setdefault("ai_providers", {})
+        for provider_name, provider_config in providers.items():
+            if not isinstance(provider_config, dict):
+                provider_config = {}
+                providers[provider_name] = provider_config
+
+            prefix = f"YTSC_{provider_name.upper()}_"
+            for field, suffix in self.PROVIDER_ENV_OVERRIDES.items():
+                value = self._get_env_override(f"{prefix}{suffix}")
+                if value is not None:
+                    provider_config[field] = value
+
+        highlight_finder = providers.get("highlight_finder", {})
+        if isinstance(highlight_finder, dict):
+            merged["api_key"] = highlight_finder.get("api_key", merged.get("api_key", ""))
+            merged["base_url"] = highlight_finder.get("base_url", merged.get("base_url", "https://api.openai.com/v1"))
+            merged["model"] = highlight_finder.get("model", merged.get("model", "gpt-4.1"))
+
+        return merged
     
     def get(self, key, default=None):
         """Get configuration value"""
-        return self.config.get(key, default)
+        return self._apply_env_overrides(self.config).get(key, default)
 
     def get_all(self):
-        """Get a shallow copy of the full configuration dict."""
-        return dict(self.config)
+        """Get the full configuration dict with env overrides applied."""
+        return self._apply_env_overrides(self.config)
     
     def set(self, key, value):
         """Set configuration value and save"""

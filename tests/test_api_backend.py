@@ -48,6 +48,7 @@ sys.modules.setdefault("requests", requests_stub)
 
 from api.backend import ClipperBackend
 from api.http_server import ClipperApiServer, ClipperJobManager
+from config.config_manager import ConfigManager
 
 
 class ClipperBackendTests(unittest.TestCase):
@@ -64,8 +65,20 @@ class ClipperBackendTests(unittest.TestCase):
 
     def tearDown(self):
         shutil.rmtree(self.tmpdir, ignore_errors=True)
-        os.environ.pop("YTSC_CONFIG_FILE", None)
-        os.environ.pop("YTSC_OUTPUT_DIR", None)
+        for env_name in (
+            "YTSC_CONFIG_FILE",
+            "YTSC_OUTPUT_DIR",
+            "YTSC_API_KEY",
+            "YTSC_BASE_URL",
+            "YTSC_MODEL",
+            "YTSC_PROVIDER_TYPE",
+            "YTSC_HIGHLIGHT_FINDER_API_KEY",
+            "YTSC_HIGHLIGHT_FINDER_BASE_URL",
+            "YTSC_HIGHLIGHT_FINDER_MODEL",
+            "YTSC_HIGHLIGHT_FINDER_SYSTEM_MESSAGE",
+            "YTSC_CAPTION_MAKER_API_KEY",
+        ):
+            os.environ.pop(env_name, None)
 
     def test_save_ai_settings_updates_provider_and_legacy_fields(self):
         result = self.backend.save_ai_settings(
@@ -124,6 +137,35 @@ class ClipperBackendTests(unittest.TestCase):
         backend = ClipperBackend(ffmpeg_path="ffmpeg", ytdlp_path="yt-dlp")
         self.assertEqual(backend.config_file, env_config)
         self.assertEqual(backend.output_dir, env_output)
+
+    def test_env_overrides_are_applied_to_provider_reads_without_persisting(self):
+        manager = ConfigManager(self.config_file, self.output_dir)
+        manager.config["ai_providers"]["highlight_finder"]["api_key"] = "file-secret"
+        manager.config["ai_providers"]["caption_maker"]["api_key"] = "caption-file-secret"
+        manager.save()
+
+        os.environ["YTSC_HIGHLIGHT_FINDER_API_KEY"] = "env-highlight-secret"
+        os.environ["YTSC_HIGHLIGHT_FINDER_BASE_URL"] = "https://example.test/v1"
+        os.environ["YTSC_HIGHLIGHT_FINDER_MODEL"] = "gpt-env"
+        os.environ["YTSC_HIGHLIGHT_FINDER_SYSTEM_MESSAGE"] = "env prompt"
+        os.environ["YTSC_CAPTION_MAKER_API_KEY"] = "env-caption-secret"
+        os.environ["YTSC_PROVIDER_TYPE"] = "custom"
+
+        merged = manager.get_all()
+
+        self.assertEqual(merged["provider_type"], "custom")
+        self.assertEqual(merged["ai_providers"]["highlight_finder"]["api_key"], "env-highlight-secret")
+        self.assertEqual(merged["ai_providers"]["highlight_finder"]["base_url"], "https://example.test/v1")
+        self.assertEqual(merged["ai_providers"]["highlight_finder"]["model"], "gpt-env")
+        self.assertEqual(merged["ai_providers"]["highlight_finder"]["system_message"], "env prompt")
+        self.assertEqual(merged["ai_providers"]["caption_maker"]["api_key"], "env-caption-secret")
+        self.assertEqual(merged["api_key"], "env-highlight-secret")
+        self.assertEqual(merged["base_url"], "https://example.test/v1")
+        self.assertEqual(merged["model"], "gpt-env")
+
+        saved = json.loads(self.config_file.read_text())
+        self.assertEqual(saved["ai_providers"]["highlight_finder"]["api_key"], "file-secret")
+        self.assertEqual(saved["ai_providers"]["caption_maker"]["api_key"], "caption-file-secret")
 
 
 class _FakeCore:

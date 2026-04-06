@@ -49,7 +49,8 @@ except ImportError:
     YTDLP_MODULE_AVAILABLE = False
 
 try:
-    import google.generativeai as genai
+    from google import genai
+    from google.genai import types as genai_types
     GOOGLE_GENAI_AVAILABLE = True
 except ImportError:
     GOOGLE_GENAI_AVAILABLE = False
@@ -1512,27 +1513,29 @@ Transcript:
         return session_data
     
     def _call_gemini_api(self, prompt: str) -> str:
-        """Call Google Gemini API directly (not via OpenAI SDK)"""
+        """Call Google Gemini API directly via the supported google-genai SDK."""
         try:
-            # Get API key from highlight_client config
-            # The API key should be set in base_url as part of the request
             hf_config = self.ai_providers.get("highlight_finder", {})
             api_key = hf_config.get("api_key", "")
             
             if not api_key:
                 raise Exception("No API key configured for Google Gemini")
-            
-            # Configure genai with API key
-            genai.configure(api_key=api_key)
-            
-            # Create model and call API
-            model = genai.GenerativeModel(self.model)
-            response = model.generate_content(prompt)
-            
-            if not response.text:
+
+            client = genai.Client(api_key=api_key)
+
+            response = client.models.generate_content(
+                model=self.model,
+                contents=prompt,
+                config=genai_types.GenerateContentConfig(
+                    temperature=self.temperature,
+                ),
+            )
+
+            response_text = getattr(response, "text", None)
+            if not response_text:
                 raise Exception(f"Empty response from Gemini: {response}")
-            
-            return response.text
+
+            return response_text
         except Exception as e:
             self.log(f"  ❌ Google Gemini API Error: {e}")
             raise

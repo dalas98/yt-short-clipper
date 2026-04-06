@@ -238,10 +238,39 @@ Or use Compose:
 docker compose up --build
 ```
 
+For secrets, prefer env vars instead of storing API keys in `config.json`.
+You can copy `.env.api.example` to `.env.api` and pass it to Docker:
+
+```bash
+cp .env.api.example .env.api
+docker run --rm -p 8787:8787 --env-file .env.api -v $(pwd)/docker-data:/data yt-short-clipper-api
+```
+
+Supported AI env overrides include:
+
+- `YTSC_HIGHLIGHT_FINDER_API_KEY`
+- `YTSC_CAPTION_MAKER_API_KEY`
+- `YTSC_HOOK_MAKER_API_KEY`
+- `YTSC_YOUTUBE_TITLE_MAKER_API_KEY`
+
+Optional per-provider overrides are also supported:
+
+- `YTSC_<PROVIDER>_BASE_URL`
+- `YTSC_<PROVIDER>_MODEL`
+- `YTSC_<PROVIDER>_SYSTEM_MESSAGE`
+
+Example provider names:
+
+- `HIGHLIGHT_FINDER`
+- `CAPTION_MAKER`
+- `HOOK_MAKER`
+- `YOUTUBE_TITLE_MAKER`
+
 Docker deployment files added:
 
 - `Dockerfile`
 - `.dockerignore`
+- `.env.api.example`
 - `compose.yaml`
 - `requirements_api.txt`
 
