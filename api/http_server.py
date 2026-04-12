@@ -1,12 +1,15 @@
 from __future__ import annotations
 
+import asyncio
 import copy
+import json
 import threading
 import uuid
 from datetime import datetime, timezone
 from typing import Any, Optional
 
 from fastapi import Body, FastAPI, HTTPException, Request
+from fastapi.responses import StreamingResponse
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel, ConfigDict, Field
 import uvicorn
@@ -355,6 +358,10 @@ class ClipperJobManager:
                 job["status"] = "failed"
                 job["message"] = str(exc)
                 job["error"] = str(exc)
+                logs = job.setdefault("logs", [])
+                logs.append(f"[ERROR] {exc}")
+                if len(logs) > 100:
+                    del logs[:-100]
             job["finished_at"] = _utcnow()
             job["updated_at"] = job["finished_at"]
 
@@ -472,6 +479,51 @@ def create_app(backend: Optional[ClipperBackend] = None) -> FastAPI:
         if not job:
             raise HTTPException(status_code=404, detail=f"Unknown job: {job_id}")
         return job
+
+    @app.get("/api/jobs/{job_id}/stream", tags=["jobs"])
+    async def stream_job(request: Request, job_id: str):
+        import logging
+        logger = logging.getLogger(__name__)
+        
+        job = request.app.state.job_manager.get_job(job_id)
+        if not job:
+            logger.error(f"[SSE] Job not found: {job_id}")
+            raise HTTPException(status_code=404, detail=f"Unknown job: {job_id}")
+        
+        logger.info(f"[SSE] Starting stream for job: {job_id}")
+
+        async def event_generator():
+            TERMINAL = frozenset(TERMINAL_STATUSES)
+            iteration = 0
+
+            while True:
+                iteration += 1
+                current_job = request.app.state.job_manager.get_job(job_id)
+                if not current_job:
+                    logger.error(f"[SSE] Job disappeared: {job_id}")
+                    yield "event: error\ndata: Job not found\n\n"
+                    break
+
+                data = json.dumps(current_job)
+                logger.info(f"[SSE] Sending job data for {job_id}, status: {current_job.get('status')}, logs: {len(current_job.get('logs', []))}")
+                yield f"event: job\ndata: {data}\n\n"
+
+                if current_job["status"] in TERMINAL:
+                    logger.info(f"[SSE] Job {job_id} reached terminal status: {current_job['status']}")
+                    break
+
+                await asyncio.sleep(0.5)
+
+        return StreamingResponse(
+            event_generator(),
+            media_type="text/event-stream",
+            headers={
+                "Cache-Control": "no-cache, no-transform",
+                "Connection": "keep-alive",
+                "X-Accel-Buffering": "no",
+                "Transfer-Encoding": "chunked",
+            },
+        )
 
     @app.post("/api/jobs/{job_id}/cancel", tags=["jobs"])
     async def cancel_job(request: Request, job_id: str) -> dict[str, Any]:
